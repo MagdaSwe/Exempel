@@ -1,0 +1,341 @@
+---
+title: "0_1"
+output: html_document
+date: "2024-04-18"
+---
+
+```{r}
+
+library(MASS)  
+
+#install.packages("leaps")
+#install.packages("caret", dependencies = TRUE)
+library(leaps)  
+
+library(car)   
+#install.packages("Metrics")
+# Ladda glmnet om det inte redan är laddat
+library(glmnet)
+library(Metrics)
+library("readxl")
+library(ggplot2)
+library(dplyr)
+library(caret)
+library(plotly)
+library(tidyr)
+library(lmtest)
+```
+
+## R Markdown
+
+
+```{r}
+file_path <- "blocket_car_data.xlsx"
+car_data <- read_excel(file_path)
+View(car_data)
+```
+
+## Including Plots
+:
+
+```{r}
+
+# Konvertera datatyper
+duplicates <- duplicated(car_data)
+# Visa duplicerade rader
+car_data[duplicates, ]
+# Ta bort duplicerade rader och behåll endast unika rader
+car_data_unique <- car_data[!duplicated(car_data), ]
+
+# Kontrollera antalet rader före och efter borttagningen
+cat("Antal rader före borttagning:", nrow(car_data), "\n")
+cat("Antal rader efter borttagning:", nrow(car_data_unique), "\n")
+# Grundläggande deskriptiv statistik
+summary_stats <- summary(car_data_unique)
+print(summary_stats)
+
+
+
+#std_deviation <- sd(car_data_unique$Pris)
+
+
+#print(paste("Standardavvikelse:", std_deviation))
+
+# Konvertera datatyper
+car_data_unique$Pris <- as.numeric(car_data_unique$Pris)  
+car_data_unique$Bränsle <- as.factor(car_data_unique$Bränsle)
+car_data_unique$Växellåda <- as.factor(car_data_unique$Växellåda)
+car_data_unique$Miltal <- as.numeric(car_data_unique$Miltal)
+car_data_unique$Modellår <- as.numeric(car_data_unique$Modellår)  
+car_data_unique$Biltyp <- as.factor(car_data_unique$Biltyp)
+car_data_unique$Drivning <- as.factor(car_data_unique$Drivning)
+car_data_unique$Hästkrafter <- as.numeric(car_data_unique$Hästkrafter)
+car_data_unique$Märke <- as.factor(car_data_unique$Märke)
+
+
+#-----------------------------------------ÄNDRINGAR
+# Dela upp data först innan några transformationer görs
+set.seed(123)  # För reproducerbarhet
+splitIndex_train <- createDataPartition(car_data_unique$Pris, p = 0.8, list = FALSE)
+train_data <- car_data_unique[splitIndex_train, ]
+test_data <- car_data_unique[-splitIndex_train, ]
+
+
+# Modifierad version av scale_vars som tar emot externa skalningsparametrar
+scale_vars <- function(data, cols, centers = NULL, scales = NULL) {
+  if (is.null(centers) || is.null(scales)) {
+    centers <- sapply(data[, cols, drop = FALSE], mean, na.rm = TRUE)
+    scales <- sapply(data[, cols, drop = FALSE], sd, na.rm = TRUE)
+  }
+  data[, cols] <- sweep(data[, cols, drop = FALSE], 2, centers, "-")
+  data[, cols] <- sweep(data[, cols], 2, scales, "/")
+  list(data = data, centers = centers, scales = scales)
+}
+
+scaled_train <- scale_vars(train_data, c("Miltal", "Hästkrafter", "Modellår"))
+train_data <- scaled_train$data
+centers <- scaled_train$centers
+scales <- scaled_train$scales
+View(train_data)
+test_data <- scale_vars(test_data, c("Miltal", "Hästkrafter", "Modellår"), centers, scales)$data
+View(test_data)
+#---------------------------------------------------------------------
+train_data$log_pris <- log(train_data$Pris + 1)
+
+mean_log_price <- mean(train_data$log_pris, na.rm = TRUE)  # Beräkna medelvärdet av log-priset
+sd_log_price <- sd(train_data$log_pris, na.rm = TRUE)  # Beräkna standardavvikelsen av log-priset
+
+train_data$scaled_log_pris <- scale(train_data$log_pris)
+# Skapa log-pris för testdata
+test_data$log_pris <- log(test_data$Pris + 1)
+test_data$scaled_log_pris <- scale(test_data$log_pris)
+
+# Skapa och standardisera log-transformerat Pris i den ursprungliga data frame
+
+View(test_data)
+View(train_data)
+```
+
+
+```{r}
+# Skapa model.matrix för träningssetet
+x_train <- model.matrix(~ Miltal + Hästkrafter + Modellår + Växellåda + Biltyp + Märke + Bränsle - 1, data = train_data)
+x_train <- as.matrix(x_train)  # Konvertera till matris för glmnet
+
+
+# Skapa model.matrix för testsetet
+x_test <- model.matrix(~ Miltal + Hästkrafter + Modellår + Växellåda + Biltyp + Märke + Bränsle - 1, data = test_data)
+x_test <- as.matrix(x_test)  # Konvertera till matris för glmnet
+
+# Definiera responsvariabeln för träningssetet
+y_train <- train_data$scaled_log_pris
+
+
+
+# Definiera responsvariabeln för testsetet
+y_test <- test_data$scaled_log_pris
+dim(y_train)
+dim(x_train)
+# Träna Lasso-modellen på träningssetet
+set.seed(123)  # För reproducerbarhet
+fit <- glmnet(x_train, y_train, alpha=1)
+
+
+```
+
+PLOTTAR
+```{r}
+
+
+#colnames(x_train)
+plot(fit, xvar = "norm", label = TRUE)
+# Hämta koefficienterna från glmnet-modellen
+#coef_matrix <- coef(fit, s = exp(seq(log(min(fit$lambda)), log(max(fit$lambda)), length = 100)))
+
+
+cv_lasso <- cv.glmnet(x_train, y_train, alpha = 1)
+summary(cv_lasso)
+
+
+
+
+lambda_optimal <- cv_lasso$lambda.min
+final_model_lasso <- glmnet(x_train, y_train, alpha = 1, lambda = lambda_optimal)
+lambda_optimal
+
+# Skriv ut CV-felet för lassomodellen
+print(paste("CV Error:", cv_lasso$cvm[cv_lasso$lambda == lambda_optimal]))
+plot(cv_lasso)
+coef(cv_lasso)
+coef(final_model_lasso)
+
+#Det optimala lambda-värdet på 0.0006985769 som du har fått från din cross-validation med glmnet indikerar styrkan på den regularisering som ger bäst modellpassning enligt den valideringsmetod du använt. Ett lägre lambda-värde som detta tyder på att modellen får inkludera fler koefficienter (variabler) som är skilda från noll, vilket kan betyda att din modell utnyttjar flera av de tillgängliga prediktorerna för att göra prediktioner. Du kan använda detta lambda-värde för att träna din slutgiltiga modell och sedan utvärdera dess prestanda på ditt testdataset.
+```
+
+```{r}
+print(summary(final_model_lasso))
+
+
+
+
+```
+
+
+```{r}
+
+
+# Använd den tränade modellen för att göra förutsägelser på testsetet
+predictions <- predict(final_model_lasso, s = lambda_optimal, newx = x_test, type = "response")
+
+# Utvärdera modellens prestanda på testsetet
+performance <- postResample(predictions, y_test)
+print(performance)
+# Beräkna RMSE
+rmse <- sqrt(mean((y_test - predictions)^2))
+
+# Beräkna MAE
+mae <- mean(abs(y_test - predictions))
+
+# Beräkna R^2
+ss_total <- sum((y_test - mean(y_test))^2)
+ss_res <- sum((y_test - predictions)^2)
+r_squared <- 1 - (ss_res / ss_total)
+
+# Skriv ut resultaten
+cat("RMSE: ", rmse, "\nMAE: ", mae, "\nR^2: ", r_squared)
+
+# Beräkna residualer
+residuals <- y_test - predictions
+
+# Plotta residualer
+plot(predictions, residuals, xlab = "Prediktioner", ylab = "Residualer", main = "Residualplot")
+abline(h = 0, col = "red")
+# Plotta QQ-plot för residualerna
+qqnorm(residuals, main = "QQ-plot för Residualer")
+qqline(residuals, col = "red")
+
+residuals <- y_test - predictions  
+RSS <- sum(residuals^2)
+
+# Antalet parametrar (p) - antalet icke-noll koefficienter
+p <- sum(coef(final_model_lasso, s = lambda_optimal) != 0)
+
+# Beräkna AIC och BIC
+n <- length(y_test)  # Antal observationer
+AIC <- n * log(RSS/n) + 2 * p
+BIC <- n * log(RSS/n) + log(n) * p
+print(paste("BIC:", BIC))
+print(paste("AIC:", AIC))
+
+
+# Beräkna prestandamått för de förutsedda resultaten jämfört med de faktiska testdatan
+rmse <- sqrt(mean((y_test - predictions)^2))
+mae <- mean(abs(y_test - predictions))
+
+# Beräkna R^2 för modellen på testdatan
+ss_total <- sum((y_test - mean(y_test))^2)
+ss_res <- sum((y_test - predictions)^2)
+r_squared <- 1 - (ss_res / ss_total)
+
+# Skriv ut prestandamått
+cat("RMSE:", rmse, "\n")
+cat("MAE:", mae, "\n")
+cat("R^2:", r_squared, "\n")
+
+# Plotta residualer för att visuellt utvärdera modellens prestanda
+residuals <- y_test - predictions
+plot(predictions, residuals, xlab = "Predictions", ylab = "Residuals", main = "Residual Plot")
+abline(h = 0, col = "red")
+qqnorm(residuals)
+qqline(residuals, col = "red")
+
+```
+
+
+```{r}
+#plottar Ci pch PI: KÖR EJ DETTA.......................
+set.seed(123)
+boot_samples <- 1000
+n <- length(y_test)
+ci <- matrix(NA, nrow = boot_samples, ncol = n)
+pi <- matrix(NA, nrow = boot_samples, ncol = n)
+
+for (i in 1:boot_samples) {
+  indices <- sample(1:n, size = n, replace = TRUE)
+  boot_model <- glmnet(x_train[indices, , drop = FALSE], y_train[indices], alpha = 1, lambda = lambda_optimal)
+  boot_predictions <- predict(boot_model, newx = as.matrix(x_test), s = lambda_optimal)
+  ci[i, ] <- boot_predictions
+  pi[i, ] <- boot_predictions + rnorm(n, mean = 0, sd = sd(y_test - predictions))  # Antag en normalfördelning för fel
+}
+
+# Beräkna konfidensintervall och prediktionsintervall
+ci_lower <- apply(ci, 2, quantile, probs = 0.025)
+ci_upper <- apply(ci, 2, quantile, probs = 0.975)
+pi_lower <- apply(pi, 2, quantile, probs = 0.025)
+pi_upper <- apply(pi, 2, quantile, probs = 0.975)
+
+# Skriv ut konfidensintervallens nedre och övre gränser
+print("Konfidensintervall Nedre Gränser:")
+print(ci_lower)
+print("Konfidensintervall Övre Gränser:")
+print(ci_upper)
+
+# Skriv ut prediktionsintervallens nedre och övre gränser
+print("Prediktionsintervall Nedre Gränser:")
+print(pi_lower)
+print("Prediktionsintervall Övre Gränser:")
+print(pi_upper)
+
+
+```
+# Skapa en ny data frame för test
+
+
+```{r}
+
+# Skapa en ny data frame för test. Blir 243 346 isf 229000, mil 2500 (GOTLAND), andra modellen blev 234 807 isf 219000 (Göteborg), ändrade miltal från 2500 till  4303. till 5050 och priset blev 231358 ist 234900, 207720 i stf 199900 (har varit 224875)m, mil 10490
+new_data <- data.frame(
+  Bränsle = factor("miljöbränsle/hybrid", levels = levels(car_data_unique$Bränsle)),
+  Växellåda = factor("automat", levels = levels(car_data_unique$Växellåda)),
+  Miltal = 2500,
+  Modellår = 2021,
+  Hästkrafter = 123,
+  Märke = factor("toyota", levels = levels(car_data_unique$Märke)),
+  Biltyp = factor("halvkombi", levels = levels(car_data_unique$Biltyp))
+)
+
+# Skala de numeriska värdena (Miltal, Hästkrafter) precis som för träningsdatan
+View(new_data)
+#new_data$Miltal <- (new_data$Miltal - miltal_mean) / miltal_sd
+#new_data$Hästkrafter <- (new_data$Hästkrafter - hästkrafter_mean) / hästkrafter_sd
+#new_data$Modellår <- (new_data$Modellår - modellår_mean) / modellår_sd
+
+
+new_data$Miltal <- (new_data$Miltal - centers["Miltal"]) / scales["Miltal"]
+new_data$Hästkrafter <- (new_data$Hästkrafter - centers["Hästkrafter"]) / scales["Hästkrafter"]
+new_data$Modellår <- (new_data$Modellår - centers["Modellår"]) / scales["Modellår"]
+View(new_data)
+
+
+
+# Använd model.matrix för att enkoda de kategoriska variablerna
+new_data_matrix <- model.matrix(~ Miltal + Hästkrafter + Modellår + Växellåda + Biltyp  + Märke + Bränsle - 1, data = new_data)
+# Förutsägelse med Lasso-modellen
+predicted_scaled_log_price <- predict(final_model_lasso, newx = new_data_matrix, s = lambda_optimal, type = "response")
+
+# Back-transformera från skalad log-pris till ursprungligt pris
+# Anta att predicted_scaled_log_price redan är förutsagt
+# Beräkna det förutsagda priset korrekt
+mean_log_price <- attr(test_data$scaled_log_pris, "scaled:center")
+sd_log_price <- attr(test_data$scaled_log_pris, "scaled:scale")
+
+predicted_log_price <- (predicted_scaled_log_price * sd_log_price) + mean_log_price
+predicted_scaled_log_price
+predicted_price <- exp(predicted_log_price) - 1
+
+# Skriv ut det förutsagda priset
+print(predicted_price)
+
+
+
+```
